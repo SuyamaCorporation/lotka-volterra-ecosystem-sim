@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ロトカ-ヴォルテラ シミュレーション</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-4">
+<div class="max-w-3xl mx-auto">
+  <h1 class="text-2xl font-bold text-center mb-1 text-emerald-400">ロトカ-ヴォルテラ 捕食者-被食者シミュレーション</h1>
+  <p class="text-center text-gray-400 text-sm mb-4">個体数の周期的変動をリアルタイム描画</p>
+
+  <!-- Canvas -->
+  <div class="bg-gray-800 rounded-lg p-2 mb-4">
+    <canvas id="mainCanvas" class="w-full rounded" width="700" height="300"></canvas>
+  </div>
+
+  <!-- Controls -->
+  <div class="grid grid-cols-2 gap-3 mb-4">
+    <div>
+      <label for="alphaSlider" class="block text-xs text-gray-400 mb-1">α 被食者増殖率: <span id="alphaVal">0.8</span></label>
+      <input type="range" id="alphaSlider" min="0.1" max="2.0" step="0.1" value="0.8"
+        class="w-full accent-green-400" aria-label="被食者増殖率α">
+    </div>
+    <div>
+      <label for="betaSlider" class="block text-xs text-gray-400 mb-1">β 捕食率: <span id="betaVal">0.04</span></label>
+      <input type="range" id="betaSlider" min="0.01" max="0.20" step="0.01" value="0.04"
+        class="w-full accent-green-400" aria-label="捕食率β">
+    </div>
+    <div>
+      <label for="gammaSlider" class="block text-xs text-gray-400 mb-1">γ 捕食者死亡率: <span id="gammaVal">0.6</span></label>
+      <input type="range" id="gammaSlider" min="0.1" max="2.0" step="0.1" value="0.6"
+        class="w-full accent-red-400" aria-label="捕食者死亡率γ">
+    </div>
+    <div>
+      <label for="deltaSlider" class="block text-xs text-gray-400 mb-1">δ 変換効率: <span id="deltaVal">0.02</span></label>
+      <input type="range" id="deltaSlider" min="0.005" max="0.10" step="0.005" value="0.02"
+        class="w-full accent-red-400" aria-label="変換効率δ">
+    </div>
+  </div>
+
+  <!-- Buttons -->
+  <div class="flex gap-3 mb-4 flex-wrap">
+    <button id="playBtn"
+      class="px-5 py-2 bg-emerald-700 hover:bg-emerald-600 rounded font-bold"
+      aria-label="再生/一時停止">⏸ 一時停止</button>
+    <button id="resetBtn"
+      class="px-5 py-2 bg-gray-700 hover:bg-gray-600 rounded font-bold"
+      aria-label="リセット">↺ リセット</button>
+    <button id="phaseBtn"
+      class="px-5 py-2 bg-purple-700 hover:bg-purple-600 rounded font-bold"
+      aria-label="位相平面モードに切替">🔄 位相平面モード</button>
+  </div>
+
+  <!-- Legend + Current Values -->
+  <div class="bg-gray-800 rounded-lg p-3 flex gap-6 text-sm">
+    <div class="flex items-center gap-2"><span class="w-4 h-1 bg-green-400 inline-block"></span><span class="text-green-300">被食者（兎）</span></div>
+    <div class="flex items-center gap-2"><span class="w-4 h-1 bg-red-400 inline-block"></span><span class="text-red-300">捕食者（狼）</span></div>
+    <div class="ml-auto text-gray-400 text-xs">
+      被食者: <span id="preyVal" class="text-green-300 font-mono">--</span> |
+      捕食者: <span id="predVal" class="text-red-300 font-mono">--</span>
+    </div>
+  </div>
+
+  <!-- Phase plane info -->
+  <div id="phaseInfo" class="hidden mt-3 bg-gray-800 rounded-lg p-3 text-xs text-gray-400">
+    位相平面モード: X軸=被食者個体数 / Y軸=捕食者個体数。閉じた楕円軌道が周期的振動を示す。
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+
+let alpha = 0.8, beta = 0.04, gamma = 0.6, delta = 0.02;
+let prey = 40, pred = 9;
+let history = []; // {prey, pred, t}
+const MAX_HISTORY = 600;
+let t = 0;
+let paused = false;
+let phaseMode = false;
+let animId = null;
+
+// RK4
+function rk4(x, y, dt) {
+  const dx = (a,b) => a*b - beta*b*a;
+  const dy = (a,b) => delta*a*b - gamma*b;
+  const k1x = alpha*x - beta*x*y;
+  const k1y = delta*x*y - gamma*y;
+  const k2x = alpha*(x+dt/2*k1x) - beta*(x+dt/2*k1x)*(y+dt/2*k1y);
+  const k2y = delta*(x+dt/2*k1x)*(y+dt/2*k1y) - gamma*(y+dt/2*k1y);
+  const k3x = alpha*(x+dt/2*k2x) - beta*(x+dt/2*k2x)*(y+dt/2*k2y);
+  const k3y = delta*(x+dt/2*k2x)*(y+dt/2*k2y) - gamma*(y+dt/2*k2y);
+  const k4x = alpha*(x+dt*k3x) - beta*(x+dt*k3x)*(y+dt*k3y);
+  const k4y = delta*(x+dt*k3x)*(y+dt*k3y) - gamma*(y+dt*k3y);
+  return {
+    nx: x + dt/6*(k1x+2*k2x+2*k3x+k4x),
+    ny: y + dt/6*(k1y+2*k2y+2*k3y+k4y)
+  };
+}
+
+function drawTimeSeries() {
+  const W = canvas.width, H = canvas.height;
+  ctx.fillStyle = '#111827'; ctx.fillRect(0,0,W,H);
+
+  // axes
+  ctx.strokeStyle = '#374151'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = H * 0.05 + (H * 0.9) * (i/4);
+    ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(W-10, y); ctx.stroke();
+  }
+
+  if (history.length < 2) return;
+
+  const maxPop = Math.max(100, ...history.map(h => Math.max(h.prey, h.pred))) * 1.1;
+  const n = Math.min(history.length, MAX_HISTORY);
+  const startIdx = history.length - n;
+
+  function toX(i) { return 40 + (W-50) * (i / (n-1)); }
+  function toY(v) { return H * 0.95 - (H * 0.9) * (v / maxPop); }
+
+  // prey
+  ctx.beginPath(); ctx.strokeStyle = '#34d399'; ctx.lineWidth = 2;
+  for (let i = 0; i < n; i++) {
+    const d = history[startIdx+i];
+    if (i === 0) ctx.moveTo(toX(i), toY(d.prey));
+    else ctx.lineTo(toX(i), toY(d.prey));
+  }
+  ctx.stroke();
+
+  // pred
+  ctx.beginPath(); ctx.strokeStyle = '#f87171'; ctx.lineWidth = 2;
+  for (let i = 0; i < n; i++) {
+    const d = history[startIdx+i];
+    if (i === 0) ctx.moveTo(toX(i), toY(d.pred));
+    else ctx.lineTo(toX(i), toY(d.pred));
+  }
+  ctx.stroke();
+
+  // Y axis label
+  ctx.fillStyle = '#6b7280'; ctx.font = '10px monospace';
+  ctx.fillText('個体数', 2, 20);
+  ctx.fillText(Math.round(maxPop), 2, H*0.05+4);
+  ctx.fillText('0', 2, H*0.95+4);
+}
+
+function drawPhase() {
+  const W = canvas.width, H = canvas.height;
+  ctx.fillStyle = '#111827'; ctx.fillRect(0,0,W,H);
+
+  if (history.length < 2) return;
+
+  const maxPrey = Math.max(100, ...history.map(h => h.prey)) * 1.1;
+  const maxPred = Math.max(50, ...history.map(h => h.pred)) * 1.1;
+
+  function toX(v) { return 40 + (W-50) * (v / maxPrey); }
+  function toY(v) { return H * 0.95 - (H * 0.9) * (v / maxPred); }
+
+  // axes
+  ctx.strokeStyle = '#374151'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(40, H*0.05); ctx.lineTo(40, H*0.95); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(40, H*0.95); ctx.lineTo(W-10, H*0.95); ctx.stroke();
+
+  // orbit
+  ctx.beginPath(); ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 1.5;
+  for (let i = 0; i < history.length; i++) {
+    const d = history[i];
+    if (i === 0) ctx.moveTo(toX(d.prey), toY(d.pred));
+    else ctx.lineTo(toX(d.prey), toY(d.pred));
+  }
+  ctx.stroke();
+
+  // current point
+  const last = history[history.length-1];
+  ctx.beginPath();
+  ctx.arc(toX(last.prey), toY(last.pred), 5, 0, Math.PI*2);
+  ctx.fillStyle = '#fde68a'; ctx.fill();
+
+  ctx.fillStyle = '#6b7280'; ctx.font = '10px monospace';
+  ctx.fillText('被食者 →', W-70, H*0.95-2);
+  ctx.fillText('↑ 捕食者', 2, 20);
+}
+
+function step() {
+  if (!paused) {
+    for (let i = 0; i < 3; i++) {
+      const r = rk4(prey, pred, 0.1);
+      prey = Math.max(0.1, r.nx);
+      pred = Math.max(0.01, r.ny);
+      t += 0.1;
+      history.push({prey, pred, t});
+      if (history.length > MAX_HISTORY * 2) history.splice(0, history.length - MAX_HISTORY);
+    }
+    document.getElementById('preyVal').textContent = prey.toFixed(1);
+    document.getElementById('predVal').textContent = pred.toFixed(1);
+  }
+  if (phaseMode) drawPhase();
+  else drawTimeSeries();
+  animId = requestAnimationFrame(step);
+}
+
+// Sliders
+['alpha','beta','gamma','delta'].forEach(p => {
+  const sl = document.getElementById(p + 'Slider');
+  const vl = document.getElementById(p + 'Val');
+  sl.addEventListener('input', () => {
+    const v = parseFloat(sl.value);
+    if (p === 'alpha') alpha = v;
+    else if (p === 'beta') beta = v;
+    else if (p === 'gamma') gamma = v;
+    else if (p === 'delta') delta = v;
+    vl.textContent = v;
+  });
+});
+
+document.getElementById('playBtn').addEventListener('click', () => {
+  paused = !paused;
+  document.getElementById('playBtn').textContent = paused ? '▶ 再生' : '⏸ 一時停止';
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  prey = 40; pred = 9; t = 0; history = [];
+});
+
+document.getElementById('phaseBtn').addEventListener('click', () => {
+  phaseMode = !phaseMode;
+  document.getElementById('phaseBtn').textContent = phaseMode ? '📈 時系列モード' : '🔄 位相平面モード';
+  document.getElementById('phaseInfo').classList.toggle('hidden', !phaseMode);
+  if (phaseMode) history = [];
+});
+
+step();
+</script>
+</body>
+</html>
